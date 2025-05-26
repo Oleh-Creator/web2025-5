@@ -12,98 +12,100 @@ program
 
 const { host, port, cache } = program.opts();
 
+// Створюємо директорію cache, якщо вона не існує
+if (!fs.existsSync(cache)) {
+  fs.mkdirSync(cache, { recursive: true });
+  console.log(`Created cache directory: ${cache}`);
+}
+
 // Функція для отримання шляху до файлу
 const getCachePath = (statusCode) => path.join(cache, `${statusCode}.jpg`);
 
 // Функція для завантаження зображення з http.cat
 const fetchImageFromHttpCat = async (statusCode) => {
   try {
+    console.log(`Fetching image from https://http.cat/${statusCode}`);
     const response = await superagent.get(`https://http.cat/${statusCode}`).buffer(true);
-    return response.body; // Це має бути буфер
+    return response.body;
   } catch (error) {
-    console.error("Error fetching image from http.cat:", error);
-    return null; // Якщо сталася помилка, повертаємо null
+    console.error(`Error fetching image from http.cat for status ${statusCode}:`, error.message);
+    return null;
   }
 };
 
 const server = http.createServer(async (req, res) => {
+  console.log(`Received ${req.method} request for ${req.url}`);
   const statusCode = req.url.substring(1);
 
-  // PUT: записати файл у кеш
   if (req.method === "PUT") {
     const cachePath = getCachePath(statusCode);
     const fileStream = fs.createWriteStream(cachePath);
     req.pipe(fileStream);
     fileStream.on("finish", () => {
+      console.log(`Saved image to ${cachePath}`);
       res.statusCode = 201;
       res.end("Image saved successfully.");
     });
-  }
-
-  // GET: отримати файл із кешу
-  else if (req.method === "GET") {
+    fileStream.on("error", (err) => {
+      console.error(`Error saving image to ${cachePath}:`, err.message);
+      res.statusCode = 500;
+      res.end("Failed to save image.");
+    });
+  } else if (req.method === "GET") {
     const cachePath = getCachePath(statusCode);
-
-    // Перевірка наявності файлу в кеші
     fs.readFile(cachePath, async (err, data) => {
       if (err) {
-        // Якщо файлу немає в кеші, завантажуємо з http.cat
+        console.log(`Image not found in cache: ${cachePath}, fetching from http.cat`);
         const image = await fetchImageFromHttpCat(statusCode);
-
-        if (image) {
-          // Перевірка, чи є отриманий об'єкт буфером
-          if (Buffer.isBuffer(image)) {
-            // Якщо картинка є буфером, зберігаємо її в кеш
-            fs.writeFile(cachePath, image, (err) => {
-              if (err) {
-                res.statusCode = 500;
-                res.end("Failed to save image.");
-              } else {
-                res.statusCode = 200;
-                res.setHeader("Content-Type", "image/jpeg");
-                res.end(image);
-              }
-            });
-          } else {
-            res.statusCode = 500;
-            res.end("Invalid image format.");
-          }
+        if (image && Buffer.isBuffer(image)) {
+          fs.writeFile(cachePath, image, (err) => {
+            if (err) {
+              console.error(`Error saving image to ${cachePath}:`, err.message);
+              res.statusCode = 500;
+              res.end("Failed to save image.");
+            } else {
+              console.log(`Saved image to ${cachePath} from http.cat`);
+              res.statusCode = 200;
+              res.setHeader("Content-Type", "image/jpeg");
+              res.end(image);
+            }
+          });
         } else {
-          // Якщо картинку не вдалося завантажити
           res.statusCode = 404;
           res.end("Image not found.");
         }
       } else {
-        // Якщо картинка є в кеші
+        console.log(`Serving image from cache: ${cachePath}`);
         res.statusCode = 200;
         res.setHeader("Content-Type", "image/jpeg");
         res.end(data);
       }
     });
-  }
-
-  // DELETE: видалити файл із кешу
-  else if (req.method === "DELETE") {
+  } else if (req.method === "DELETE") {
     const cachePath = getCachePath(statusCode);
     fs.unlink(cachePath, (err) => {
       if (err) {
+        console.log(`Image not found for deletion: ${cachePath}`);
         res.statusCode = 404;
         res.end("Image not found.");
       } else {
+        console.log(`Deleted image: ${cachePath}`);
         res.statusCode = 200;
         res.end("Image deleted successfully.");
       }
     });
-  }
-
-  // Інші методи - 405 Method Not Allowed
-  else {
+  } else {
+    console.log(`Method not allowed: ${req.method}`);
     res.statusCode = 405;
     res.end("Method Not Allowed");
   }
 });
 
-// Запуск сервера
-server.listen(port, host, () => {
-  console.log(`Server running at http://${host}:${port}`);
+server.on("error", (err) => {
+  console.error("Server error:", err.message);
+});
+
+// Явно прив’язуємо до IPv4
+server.listen(port, '127.0.0.1', () => {
+  console.log(`Server running at http://127.0.0.1:${port}`);
 });
